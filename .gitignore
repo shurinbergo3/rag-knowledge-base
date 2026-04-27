@@ -1,0 +1,24 @@
+# Secrets
+.env
+
+# Intermediate data (may contain sensitive business info)
+chunks.json
+
+# Excel files with real data
+knowledge_base.xlsx
+*.xlsx
+!knowledge_base_template.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/

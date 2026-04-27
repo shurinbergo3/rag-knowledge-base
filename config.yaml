@@ -1,0 +1,33 @@
+# ──────────────────────────────────────────────────────────────
+# RAG Knowledge Base — Configuration
+# ──────────────────────────────────────────────────────────────
+# Copy this file and adjust for your project.
+# Secrets (API keys) go in .env — do NOT put them here.
+
+project:
+  name: "My Project"                  # Human-readable project name
+  language: "ru"                      # "ru" or "en" (affects chunk labels)
+
+excel:
+  path: "knowledge_base.xlsx"         # Path to your Excel file
+
+  header_row: 3                       # Row number with column headers
+  data_start_row: 4                   # Row where data begins (after headers)
+  skip_sheets: []                     # Sheet names to skip, e.g. ["Титул", "Служебный"]
+  skip_values: ["FILL", "—", "-"]     # Cell values treated as empty/placeholder
+
+embeddings:
+  model: "text-embedding-3-small"     # OpenAI embedding model
+  dimension: 1536                     # Must match the model above
+  # text-embedding-3-small  → 1536 dims, cheapest, great quality
+  # text-embedding-3-large  → 3072 dims, best quality
+  # text-embedding-ada-002  → 1536 dims, legacy
+
+  batch_size: 50                      # Texts per API call
+
+qdrant:
+  collection_name: "knowledge_base"   # Collection name in Qdrant
+  distance: "Cosine"                  # Cosine | Dot | Euclid
+
+output:
+  chunks_file: "chunks.json"          # Intermediate file with parsed chunks
