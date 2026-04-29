@@ -1,24 +1,38 @@
-# Secrets
+# ── Node / Next.js ──
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Env / secrets ──
 .env
+.env.local
+.env.*.local
 
-# Intermediate data (may contain sensitive business info)
-chunks.json
-
-# Excel files with real data
-knowledge_base.xlsx
-*.xlsx
-!knowledge_base_template.xlsx
-
-# Python
+# ── Python ──
 __pycache__/
 *.pyc
 *.pyo
 .venv/
 venv/
-*.egg-info/
-dist/
-build/
+.pytest_cache/
 
-# IDE
+# ── Project artifacts ──
+chunks.json
+*.xlsx
+*.xls
+*.pdf
+*.docx
+*.doc
+!web/public/*
+
+# ── OS / editor ──
+.DS_Store
 .vscode/
 .idea/
+*.log
+
+# ── Vercel ──
+.vercel

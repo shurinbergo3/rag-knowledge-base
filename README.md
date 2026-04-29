@@ -1,11 +1,11 @@
 # RAG Knowledge Base Loader
 
-A ready-to-use pipeline that turns any Excel file into a searchable vector database in [Qdrant](https://qdrant.tech). Built for AI sales consultants and customer-support bots.
+A ready-to-use pipeline that turns a structured Excel knowledge base into a searchable vector database in [Qdrant](https://qdrant.tech). Built for AI sales consultants and customer-support bots.
 
 ## How it works
 
 ```
-Excel (any structure, any number of sheets)
+Excel (filled by your team)
         ↓  excel_to_chunks.py    — parse sheets into text chunks
 chunks.json
         ↓  load_to_qdrant.py     — embed with OpenAI → upsert to Qdrant
@@ -18,14 +18,20 @@ The bot retrieves the 3–5 most relevant chunks for each customer message and a
 
 ---
 
-## Excel format
+## Excel template structure
 
-The parser reads **any Excel file** automatically — no hardcoded sheet names or column order.
+The pipeline expects an Excel file with these six sheets (names configurable in `config.yaml`):
 
-- Column headers are read from `header_row` (default: row 3)
-- Data starts at `data_start_row` (default: row 4)
-- Each non-empty row becomes one chunk: `Header: value\n...`
-- Sheets to skip and placeholder values are configurable in `config.yaml`
+| Sheet | Contents |
+|-------|----------|
+| 1 · Catalog | Products / services with characteristics and prices |
+| 2 · FAQ | Customer questions + ready-made bot answers |
+| 3 · Qualification | Step-by-step lead qualification scenario |
+| 4 · Conditions | Work terms: measurement, delivery, payment, warranty |
+| 5 · Escalation | Rules for when to hand off to a human manager |
+| 6 · Stop-topics | Topics the bot must not answer on its own |
+
+> A ready-to-fill Excel template is included in the repo as `knowledge_base_template.xlsx`.
 
 ---
 
@@ -34,7 +40,7 @@ The parser reads **any Excel file** automatically — no hardcoded sheet names o
 ### 1 · Clone and install
 
 ```bash
-git clone https://github.com/shurinbergo3/rag-knowledge-base.git
+git clone https://github.com/your-username/rag-knowledge-base.git
 cd rag-knowledge-base
 pip install -r requirements.txt
 ```
@@ -55,10 +61,7 @@ project:
   name: "My Company"
 
 excel:
-  path: "knowledge_base.xlsx"   # path to your Excel file
-  header_row: 3                 # row with column headers
-  data_start_row: 4             # first row of data
-  skip_sheets: ["Cover"]        # sheets to skip (optional)
+  path: "knowledge_base.xlsx"   # path to your filled Excel file
 
 qdrant:
   collection_name: "my_kb"      # collection name in Qdrant
@@ -127,7 +130,8 @@ rag-knowledge-base/
 ├── config.yaml               # All settings (no secrets)
 ├── .env.example              # Secret keys template
 ├── .gitignore
-└── requirements.txt
+├── requirements.txt
+└── knowledge_base_template.xlsx   # Excel template to fill
 ```
 
 ---
@@ -165,10 +169,10 @@ MIT
 
 ### Что делает этот проект
 
-Это готовый пайплайн для создания базы знаний AI-бота продаж или поддержки клиентов. Пайплайн превращает **любой** Excel-файл в векторную базу данных Qdrant, из которой бот достаёт релевантные фрагменты при ответе на вопросы клиентов (RAG — Retrieval-Augmented Generation).
+Это готовый пайплайн для создания базы знаний AI-бота продаж или поддержки клиентов. Пайплайн превращает структурированный Excel-файл в векторную базу данных Qdrant, из которой бот достаёт релевантные фрагменты при ответе на вопросы клиентов (RAG — Retrieval-Augmented Generation).
 
 ```
-Excel (любая структура, любое количество листов)
+Excel (заполняется командой)
         ↓  excel_to_chunks.py    — парсит листы в текстовые чанки
 chunks.json
         ↓  load_to_qdrant.py     — создаёт эмбеддинги через OpenAI → загружает в Qdrant
@@ -183,14 +187,25 @@ chunks.json
 
 ### Структура скриптов
 
-**`excel_to_chunks.py`** — Универсальный парсер Excel.
-Читает заголовки колонок из строки `header_row`, затем для каждой строки данных строит чанк вида `Заголовок: значение`. Работает с любым файлом — без привязки к именам листов или порядку колонок. Результат сохраняется в `chunks.json`.
+**`excel_to_chunks.py`** — Парсер Excel-файла.
+Читает шесть листов базы знаний и превращает каждую строку в текстовый фрагмент (чанк) с метаданными (лист, категория, номер строки). Результат сохраняется в `chunks.json`.
+
+Поддерживаемые листы:
+
+| Лист | Содержимое |
+|------|-----------|
+| 1 · Каталог | Товары / услуги с характеристиками и ценами |
+| 2 · FAQ | Вопросы клиентов + готовые ответы бота |
+| 3 · Квалификация | Пошаговый сценарий квалификации лида |
+| 4 · Условия работы | Замер, доставка, оплата, гарантия |
+| 5 · Эскалация | Правила передачи диалога менеджеру |
+| 6 · Стоп-слова | Темы, на которые бот не отвечает самостоятельно |
 
 **`load_to_qdrant.py`** — Загрузчик в векторную БД.
-Загружает чанки из `chunks.json` (или парсит Excel заново, если файл отсутствует), создаёт векторные эмбеддинги через OpenAI и загружает их в коллекцию Qdrant батчами. Если коллекция уже существует — делает upsert без дублей. В конце автоматически запускает два тестовых запроса.
+Загружает чанки из `chunks.json` (или парсит Excel заново, если файл отсутствует), создаёт векторные эмбеддинги через OpenAI и загружает их в коллекцию Qdrant батчами. Если коллекция уже существует — делает upsert без дублей. В конце автоматически запускает два тестовых запроса для проверки работоспособности.
 
 **`query_test.py`** — Интерактивный тестировщик поиска.
-Позволяет проверить базу знаний вручную: в интерактивном режиме (цикл в терминале) или разовым запросом через `--query`. Выводит топ-N результатов с оценкой релевантности и названием листа.
+Позволяет проверить базу знаний вручную: либо в интерактивном режиме (вводи запросы в терминале), либо разовым запросом через аргумент `--query`. Выводит топ-N результатов с оценкой релевантности, листом и категорией.
 
 ---
 
@@ -203,7 +218,7 @@ pip install -r requirements.txt
 # 2. Заполнить .env (ключи OpenAI и Qdrant)
 cp .env.example .env
 
-# 3. Настроить config.yaml (путь к Excel, номера строк с заголовками и данными)
+# 3. Настроить config.yaml (имя проекта, путь к Excel, имена листов)
 
 # 4. Запустить Qdrant локально
 docker run -d -p 6333:6333 qdrant/qdrant
