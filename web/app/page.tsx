@@ -4,11 +4,15 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import UploadTab from '@/components/UploadTab'
 import SearchTab from '@/components/SearchTab'
+import AuthGate from '@/components/AuthGate'
+import ProjectSelector from '@/components/ProjectSelector'
+import { useProjects } from '@/lib/use-projects'
 
 type Tab = 'upload' | 'search'
 
-export default function Home() {
+function HomeInner() {
   const [tab, setTab] = useState<Tab>('upload')
+  const projectState = useProjects()
 
   return (
     <main className="min-h-screen flex flex-col">
@@ -78,6 +82,11 @@ export default function Home() {
           </p>
         </motion.div>
 
+        {/* ── Project selector ── */}
+        <div className="max-w-2xl mx-auto mb-5">
+          <ProjectSelector state={projectState} />
+        </div>
+
         {/* ── Tab content ── */}
         <AnimatePresence mode="wait">
           <motion.div
@@ -87,7 +96,9 @@ export default function Home() {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
           >
-            {tab === 'upload' ? <UploadTab /> : <SearchTab />}
+            {tab === 'upload'
+              ? <UploadTab project={projectState.active} />
+              : <SearchTab project={projectState.active} />}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -100,5 +111,13 @@ export default function Home() {
         </div>
       </footer>
     </main>
+  )
+}
+
+export default function Home() {
+  return (
+    <AuthGate>
+      <HomeInner />
+    </AuthGate>
   )
 }

@@ -25,26 +25,33 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def search(query: str, top_k: int, cfg: dict) -> list[dict]:
-    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    qdrant_client = QdrantClient(
-        url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-        api_key=os.getenv("QDRANT_API_KEY") or None,
-    )
+class SearchSession:
+    def __init__(self, cfg: dict) -> None:
+        self.cfg = cfg
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key or api_key == "sk-...":
+            raise ValueError("OPENAI_API_KEY is not set. Check your .env file.")
+        self.openai = OpenAI(api_key=api_key)
+        self.qdrant = QdrantClient(
+            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
+            api_key=os.getenv("QDRANT_API_KEY") or None,
+            timeout=30,
+        )
 
-    response = openai_client.embeddings.create(
-        model=cfg["embeddings"]["model"],
-        input=[query],
-    )
-    q_vec = response.data[0].embedding
+    def search(self, query: str, top_k: int) -> list:
+        response = self.openai.embeddings.create(
+            model=self.cfg["embeddings"]["model"],
+            input=[query],
+        )
+        q_vec = response.data[0].embedding
 
-    results = qdrant_client.search(
-        collection_name=cfg["qdrant"]["collection_name"],
-        query_vector=q_vec,
-        limit=top_k,
-        with_payload=True,
-    )
-    return results
+        result = self.qdrant.query_points(
+            collection_name=self.cfg["qdrant"]["collection_name"],
+            query=q_vec,
+            limit=top_k,
+            with_payload=True,
+        )
+        return result.points
 
 
 def print_results(query: str, results) -> None:
@@ -55,23 +62,34 @@ def print_results(query: str, results) -> None:
         print("No results found.")
         return
     for i, r in enumerate(results, 1):
-        print(f"\n[{i}] Score: {r.score:.4f}  |  Sheet: {r.payload['sheet']}"
-              f"  |  Category: {r.payload.get('category', '—')}")
-        print(r.payload["text"])
+        payload = r.payload or {}
+        sheet = payload.get("sheet") or "—"
+        category = payload.get("category") or "—"
+        text = payload.get("text", "")
+        print(f"\n[{i}] Score: {r.score:.4f}  |  Sheet: {sheet}  |  Category: {category}")
+        print(text)
         print("─" * 55)
 
 
-def interactive_mode(cfg: dict) -> None:
-    print(f"\n🔍 Knowledge Base Search — {cfg['project']['name']}")
+def interactive_mode(session: SearchSession) -> None:
+    print(f"\n🔍 Knowledge Base Search — {session.cfg['project']['name']}")
     print("Type your query and press Enter. Type 'exit' to quit.\n")
     while True:
-        query = input("Query: ").strip()
+        try:
+            query = input("Query: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nBye!")
+            return
         if query.lower() in ("exit", "quit", "q"):
             print("Bye!")
-            break
+            return
         if not query:
             continue
-        results = search(query, top_k=3, cfg=cfg)
+        try:
+            results = session.search(query, top_k=3)
+        except Exception as e:
+            print(f"⚠️  Search failed: {e}")
+            continue
         print_results(query, results)
 
 
@@ -84,9 +102,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cfg = load_config()
+    session = SearchSession(cfg)
 
     if args.query:
-        results = search(args.query, args.top, cfg)
+        results = session.search(args.query, args.top)
         print_results(args.query, results)
     else:
-        interactive_mode(cfg)
+        interactive_mode(session)

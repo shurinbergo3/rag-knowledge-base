@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { SearchResult } from '@/lib/types'
+import { fetchWithAuth, UnauthorizedError } from '@/lib/client-auth'
 
 function ScoreBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100)
@@ -56,7 +57,11 @@ function SourceTag({ result }: { result: SearchResult }) {
   )
 }
 
-export default function SearchTab() {
+interface Props {
+  project: string | null
+}
+
+export default function SearchTab({ project }: Props) {
   const [query, setQuery] = useState('')
   const [topK, setTopK] = useState(5)
   const [results, setResults] = useState<SearchResult[]>([])
@@ -69,13 +74,19 @@ export default function SearchTab() {
     e?.preventDefault()
     const q = query.trim()
     if (!q) return
+    if (!project) {
+      setError('Select a project first.')
+      return
+    }
 
     setLoading(true)
     setError('')
     setResults([])
 
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&top=${topK}`)
+      const res = await fetchWithAuth(
+        `/api/search?q=${encodeURIComponent(q)}&top=${topK}&project=${encodeURIComponent(project)}`,
+      )
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'Search failed' }))
         throw new Error(err.error || 'Search failed')
@@ -84,7 +95,10 @@ export default function SearchTab() {
       setResults(data.results ?? [])
       setSearched(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Search failed')
+      const msg = err instanceof UnauthorizedError
+        ? 'Session expired. Please re-enter the secret.'
+        : err instanceof Error ? err.message : 'Search failed'
+      setError(msg)
     } finally {
       setLoading(false)
     }
@@ -143,7 +157,7 @@ export default function SearchTab() {
 
           <button
             type="submit"
-            disabled={!query.trim() || loading}
+            disabled={!query.trim() || loading || !project}
             className="btn-primary px-5 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none flex-shrink-0"
           >
             {loading ? (

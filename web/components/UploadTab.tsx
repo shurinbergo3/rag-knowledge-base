@@ -7,12 +7,17 @@ import ProgressSteps from './ProgressSteps'
 import ChunkPreview from './ChunkPreview'
 import type { Chunk, UploadProgress } from '@/lib/types'
 import type { StepStatus } from './ProgressSteps'
+import { fetchWithAuth, UnauthorizedError } from '@/lib/client-auth'
 
 type Phase = 'idle' | 'processing' | 'done' | 'error'
 
 const STEP_IDS = ['parse', 'embed', 'upload', 'done']
 
-export default function UploadTab() {
+interface Props {
+  project: string | null
+}
+
+export default function UploadTab({ project }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [file, setFile] = useState<File | null>(null)
   const [statuses, setStatuses] = useState<Record<string, StepStatus>>({
@@ -38,6 +43,11 @@ export default function UploadTab() {
 
   async function handleUpload() {
     if (!file) return
+    if (!project) {
+      setErrorMsg('Select or create a project first.')
+      setPhase('error')
+      return
+    }
     setPhase('processing')
     resetStatuses()
     setChunks([])
@@ -46,9 +56,10 @@ export default function UploadTab() {
 
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('project', project)
 
     try {
-      const response = await fetch('/api/upload', { method: 'POST', body: formData })
+      const response = await fetchWithAuth('/api/upload', { method: 'POST', body: formData })
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({ error: 'Upload failed' }))
@@ -78,7 +89,9 @@ export default function UploadTab() {
         }
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Something went wrong'
+      const msg = err instanceof UnauthorizedError
+        ? 'Session expired. Please re-enter the secret.'
+        : err instanceof Error ? err.message : 'Something went wrong'
       setErrorMsg(msg)
       setPhase('error')
       setStatuses(prev => {
@@ -126,16 +139,17 @@ export default function UploadTab() {
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
-            className="flex justify-center"
+            className="flex flex-col items-center gap-2"
           >
             <button
               onClick={handleUpload}
-              className="btn-primary px-8 py-3 rounded-xl font-semibold text-white text-sm flex items-center gap-2"
+              disabled={!project}
+              className="btn-primary px-8 py-3 rounded-xl font-semibold text-white text-sm flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
               </svg>
-              Build Knowledge Base
+              {project ? `Build into "${project}"` : 'Select a project first'}
             </button>
           </motion.div>
         )}

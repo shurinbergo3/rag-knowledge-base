@@ -28,8 +28,8 @@ def val(cell) -> str:
 
 
 def is_placeholder(text: str, skip_values: list[str]) -> bool:
-    t = text.upper()
-    return any(t.startswith(s.upper()) for s in skip_values)
+    t = text.strip().upper()
+    return any(t == s.strip().upper() for s in skip_values)
 
 
 def make_chunk(text: str, sheet: str, row_idx: int = 0) -> dict | None:
@@ -43,8 +43,17 @@ def make_chunk(text: str, sheet: str, row_idx: int = 0) -> dict | None:
 
 
 def parse_sheet(ws, header_row: int, data_start_row: int, skip_values: list[str]) -> list[dict]:
-    header_cells = next(ws.iter_rows(min_row=header_row, max_row=header_row))
+    if ws.max_row is None or ws.max_row < header_row:
+        return []
+
+    try:
+        header_cells = next(ws.iter_rows(min_row=header_row, max_row=header_row))
+    except StopIteration:
+        return []
+
     headers = [val(c) for c in header_cells]
+    if not any(headers):
+        return []
 
     chunks = []
     for row in ws.iter_rows(min_row=data_start_row):
@@ -72,16 +81,21 @@ def extract_chunks(config: dict) -> list[dict]:
     skip_sheets = set(config["excel"].get("skip_sheets", []))
     skip_values = config["excel"].get("skip_values", ["FILL"])
 
-    wb = openpyxl.load_workbook(excel_path, data_only=True)
-    all_chunks: list[dict] = []
+    if not Path(excel_path).exists():
+        raise FileNotFoundError(f"Excel file not found: {excel_path}")
 
-    for sheet_name in wb.sheetnames:
-        if sheet_name in skip_sheets:
-            print(f"  ⏭️  Skipping: '{sheet_name}'")
-            continue
-        chunks = parse_sheet(wb[sheet_name], header_row, data_start_row, skip_values)
-        all_chunks.extend(chunks)
-        print(f"  ✅ {sheet_name}: {len(chunks)} chunks")
+    wb = openpyxl.load_workbook(excel_path, data_only=True, read_only=True)
+    try:
+        all_chunks: list[dict] = []
+        for sheet_name in wb.sheetnames:
+            if sheet_name in skip_sheets:
+                print(f"  ⏭️  Skipping: '{sheet_name}'")
+                continue
+            chunks = parse_sheet(wb[sheet_name], header_row, data_start_row, skip_values)
+            all_chunks.extend(chunks)
+            print(f"  ✅ {sheet_name}: {len(chunks)} chunks")
+    finally:
+        wb.close()
 
     return all_chunks
 

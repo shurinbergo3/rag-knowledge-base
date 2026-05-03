@@ -7,23 +7,49 @@ export async function parseExcel(buffer: Buffer, filename: string): Promise<Chun
 
   for (const sheetName of wb.SheetNames) {
     const ws = wb.Sheets[sheetName]
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' })
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i]
-      const parts = Object.entries(row)
-        .filter(([, v]) => v !== '' && v !== null && v !== undefined)
-        .map(([k, v]) => `${k}: ${String(v).trim()}`)
-        .filter(p => p.length > 3)
-
-      if (parts.length === 0) continue
-
-      chunks.push({
-        text: parts.join('\n'),
-        metadata: { source: filename, sheet: sheetName, row: i + 2 },
-      })
-    }
+    if (!ws || !ws['!ref']) continue
+    chunks.push(...rowsFromSheet(XLSX, ws, sheetName, filename))
   }
 
   return chunks
 }
+
+function rowsFromSheet(
+  XLSX: typeof import('xlsx'),
+  ws: import('xlsx').WorkSheet,
+  sheetName: string | null,
+  filename: string,
+): Chunk[] {
+  const range = XLSX.utils.decode_range(ws['!ref'] as string)
+  const headers: string[] = []
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: range.s.r, c })]
+    headers.push(cell && cell.v != null ? String(cell.v).trim() : '')
+  }
+
+  const out: Chunk[] = []
+  for (let r = range.s.r + 1; r <= range.e.r; r++) {
+    const parts: string[] = []
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const header = headers[c - range.s.c]
+      if (!header) continue
+      const cell = ws[XLSX.utils.encode_cell({ r, c })]
+      if (!cell || cell.v === null || cell.v === undefined || cell.v === '') continue
+      const v = String(cell.v).trim()
+      if (!v) continue
+      parts.push(`${header}: ${v}`)
+    }
+    if (parts.length === 0) continue
+    out.push({
+      text: parts.join('\n'),
+      metadata: {
+        source: filename,
+        ...(sheetName ? { sheet: sheetName } : {}),
+        row: r + 1,
+      },
+    })
+  }
+  return out
+}
+
+export const __test__ = { rowsFromSheet }

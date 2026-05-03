@@ -14,14 +14,16 @@ Usage:
 
 import json
 import os
+import random
+import time
 import uuid
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, APIError, APIConnectionError, RateLimitError
 from qdrant_client import QdrantClient
-from qdrant_client.models import CollectionInfo, Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, PointStruct, VectorParams
 from tqdm import tqdm
 
 load_dotenv()
@@ -50,6 +52,11 @@ DISTANCE        = cfg["qdrant"]["distance"]
 CHUNKS_FILE     = cfg["output"]["chunks_file"]
 EXCEL_PATH      = cfg["excel"]["path"]
 
+# text-embedding-3-* limit is 8191 tokens; ~4 chars/token is a safe heuristic.
+MAX_CHARS_PER_INPUT = 24_000
+MAX_RETRIES = 4
+BASE_BACKOFF_S = 0.5
+
 DISTANCE_MAP = {
     "Cosine": Distance.COSINE,
     "Dot":    Distance.DOT,
@@ -57,11 +64,27 @@ DISTANCE_MAP = {
 }
 
 # ─────────────────────────────────────────────────────────────
-# Clients
+# Clients (lazy, cached)
 # ─────────────────────────────────────────────────────────────
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=60)
+_openai: OpenAI | None = None
+_qdrant: QdrantClient | None = None
+
+
+def openai_client() -> OpenAI:
+    global _openai
+    if _openai is None:
+        if not OPENAI_API_KEY or OPENAI_API_KEY == "sk-...":
+            raise ValueError("OPENAI_API_KEY is not set. Check your .env file.")
+        _openai = OpenAI(api_key=OPENAI_API_KEY)
+    return _openai
+
+
+def qdrant_client() -> QdrantClient:
+    global _qdrant
+    if _qdrant is None:
+        _qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=60)
+    return _qdrant
 
 
 # ─────────────────────────────────────────────────────────────
@@ -85,12 +108,39 @@ def get_chunks() -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 2 — Embeddings
+# Step 2 — Embeddings (with retries + truncation)
 # ─────────────────────────────────────────────────────────────
 
+def _truncate(text: str) -> str:
+    return text if len(text) <= MAX_CHARS_PER_INPUT else text[:MAX_CHARS_PER_INPUT]
+
+
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
-    return [item.embedding for item in response.data]
+    if not texts:
+        return []
+    safe = [_truncate(t or " ") for t in texts]
+
+    attempt = 0
+    while True:
+        try:
+            response = openai_client().embeddings.create(model=EMBEDDING_MODEL, input=safe)
+            return [item.embedding for item in response.data]
+        except (RateLimitError, APIConnectionError) as e:
+            attempt += 1
+            if attempt > MAX_RETRIES:
+                raise
+            delay = BASE_BACKOFF_S * (2 ** (attempt - 1)) + random.uniform(0, 0.2)
+            print(f"  ⏳ {type(e).__name__}, retry {attempt}/{MAX_RETRIES} in {delay:.1f}s")
+            time.sleep(delay)
+        except APIError as e:
+            status = getattr(e, "status_code", None)
+            if status is not None and status >= 500 and attempt < MAX_RETRIES:
+                attempt += 1
+                delay = BASE_BACKOFF_S * (2 ** (attempt - 1)) + random.uniform(0, 0.2)
+                print(f"  ⏳ APIError {status}, retry {attempt}/{MAX_RETRIES} in {delay:.1f}s")
+                time.sleep(delay)
+                continue
+            raise
 
 
 def embed_chunks(chunks: list[dict]) -> list[dict]:
@@ -111,20 +161,34 @@ def embed_chunks(chunks: list[dict]) -> list[dict]:
 # Step 3 — Qdrant collection
 # ─────────────────────────────────────────────────────────────
 
+def _vector_size(info) -> int | None:
+    vectors = info.config.params.vectors
+    size = getattr(vectors, "size", None)
+    if isinstance(size, int):
+        return size
+    if isinstance(vectors, dict):
+        for v in vectors.values():
+            inner = getattr(v, "size", None)
+            if isinstance(inner, int):
+                return inner
+    return None
+
+
 def ensure_collection() -> None:
-    existing = [c.name for c in qdrant_client.get_collections().collections]
+    client = qdrant_client()
+    existing = [c.name for c in client.get_collections().collections]
 
     if COLLECTION in existing:
-        info: CollectionInfo = qdrant_client.get_collection(COLLECTION)
-        actual_dim = info.config.params.vectors.size
-        if actual_dim != EMBEDDING_DIM:
+        info = client.get_collection(COLLECTION)
+        actual_dim = _vector_size(info)
+        if actual_dim is not None and actual_dim != EMBEDDING_DIM:
             print(f"⚠️  Collection exists with dim={actual_dim}, recreating...")
-            qdrant_client.delete_collection(COLLECTION)
+            client.delete_collection(COLLECTION)
         else:
             print(f"📌 Collection '{COLLECTION}' exists (dim={actual_dim}), upserting.")
             return
 
-    qdrant_client.create_collection(
+    client.create_collection(
         collection_name=COLLECTION,
         vectors_config=VectorParams(
             size=EMBEDDING_DIM,
@@ -140,6 +204,7 @@ def ensure_collection() -> None:
 
 def upload(enriched: list[dict]) -> None:
     print(f"\n📤 Uploading to {QDRANT_URL} / {COLLECTION}")
+    client = qdrant_client()
     batches = [enriched[i : i + BATCH_SIZE] for i in range(0, len(enriched), BATCH_SIZE)]
 
     for batch in tqdm(batches, desc="Upload"):
@@ -149,16 +214,16 @@ def upload(enriched: list[dict]) -> None:
                 vector=ch["vector"],
                 payload={
                     "text":     ch["text"],
-                    "sheet":    ch["metadata"]["sheet"],
+                    "sheet":    ch["metadata"].get("sheet"),
                     "category": ch["metadata"].get("category", ""),
                     "row":      ch["metadata"].get("row", 0),
                 },
             )
             for ch in batch
         ]
-        qdrant_client.upsert(collection_name=COLLECTION, points=points)
+        client.upsert(collection_name=COLLECTION, points=points, wait=True)
 
-    total = qdrant_client.count(COLLECTION).count
+    total = client.count(COLLECTION).count
     print(f"✅ Upload complete. Total points in collection: {total}")
 
 
@@ -168,16 +233,18 @@ def upload(enriched: list[dict]) -> None:
 
 def search(query: str, top_k: int = 3) -> None:
     print(f'\n🔍 Search: "{query}"')
-    q_vec   = embed_texts([query])[0]
-    results = qdrant_client.search(
+    q_vec = embed_texts([query])[0]
+    response = qdrant_client().query_points(
         collection_name=COLLECTION,
-        query_vector=q_vec,
+        query=q_vec,
         limit=top_k,
         with_payload=True,
     )
-    for i, r in enumerate(results, 1):
-        preview = r.payload["text"][:200].replace("\n", " ")
-        print(f"  [{i}] score={r.score:.3f} | {r.payload['sheet']}")
+    for i, r in enumerate(response.points, 1):
+        text = (r.payload or {}).get("text", "") if r.payload else ""
+        sheet = (r.payload or {}).get("sheet", "—")
+        preview = str(text)[:200].replace("\n", " ")
+        print(f"  [{i}] score={r.score:.3f} | {sheet}")
         print(f"      {preview}...")
 
 
