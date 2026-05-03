@@ -5,8 +5,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 
 const FILE_TYPES = {
   xlsx: { label: 'Excel', color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', ext: '.xlsx,.xls' },
-  pdf:  { label: 'PDF',   color: 'text-red-400',     bg: 'bg-red-500/10 border-red-500/20',         ext: '.pdf' },
+  csv:  { label: 'CSV',   color: 'text-teal-400',    bg: 'bg-teal-500/10 border-teal-500/20',        ext: '.csv' },
+  pdf:  { label: 'PDF',   color: 'text-red-400',     bg: 'bg-red-500/10 border-red-500/20',          ext: '.pdf' },
   docx: { label: 'Word',  color: 'text-blue-400',    bg: 'bg-blue-500/10 border-blue-500/20',        ext: '.docx,.doc' },
+  md:   { label: 'MD',    color: 'text-amber-400',   bg: 'bg-amber-500/10 border-amber-500/20',      ext: '.md,.markdown' },
   txt:  { label: 'Text',  color: 'text-slate-400',   bg: 'bg-slate-500/10 border-slate-500/20',      ext: '.txt' },
 }
 
@@ -24,7 +26,7 @@ function FileIcon({ type }: { type: keyof typeof FILE_TYPES | null }) {
   }
 
   const colors: Record<string, string> = {
-    xlsx: '#4ade80', pdf: '#f87171', docx: '#60a5fa', txt: '#94a3b8'
+    xlsx: '#4ade80', csv: '#2dd4bf', pdf: '#f87171', docx: '#60a5fa', md: '#fbbf24', txt: '#94a3b8'
   }
 
   return (
@@ -44,8 +46,10 @@ function FileIcon({ type }: { type: keyof typeof FILE_TYPES | null }) {
 function detectType(file: File): keyof typeof FILE_TYPES | null {
   const name = file.name.toLowerCase()
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) return 'xlsx'
+  if (name.endsWith('.csv')) return 'csv'
   if (name.endsWith('.pdf')) return 'pdf'
   if (name.endsWith('.docx') || name.endsWith('.doc')) return 'docx'
+  if (name.endsWith('.md') || name.endsWith('.markdown')) return 'md'
   if (name.endsWith('.txt')) return 'txt'
   return null
 }
@@ -70,7 +74,7 @@ export default function UploadZone({ onFile, disabled }: Props) {
   function handleFile(file: File) {
     const type = detectType(file)
     if (!type) {
-      setError('Unsupported file type. Please upload Excel, PDF, DOCX, or TXT.')
+      setError('Unsupported file type. Please upload Excel, CSV, PDF, DOCX, Markdown, or TXT.')
       return
     }
     if (file.size > 20 * 1024 * 1024) {
