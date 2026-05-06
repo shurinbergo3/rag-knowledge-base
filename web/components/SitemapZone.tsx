@@ -7,6 +7,7 @@ import { fetchWithAuth, UnauthorizedError } from '@/lib/client-auth'
 interface DiscoverResult {
   sitemap: string | null
   method?: 'sitemap' | 'crawl'
+  pagesFetched?: number
   pathPrefix: string | null
   urls: string[]
   total: number
@@ -92,8 +93,8 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
             </svg>
           </div>
           <div>
-            <p className="text-white font-medium">Discover via sitemap</p>
-            <p className="text-xs text-slate-500">Enter a domain or section URL — bot finds all pages automatically</p>
+            <p className="text-white font-medium">Crawl whole website</p>
+            <p className="text-xs text-slate-500">Enter a domain or section URL — bot walks the site (depth 2) and lists all pages</p>
           </div>
         </div>
 
@@ -169,7 +170,7 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
                 </p>
                 <p className="text-xs text-slate-500 truncate" title={result.sitemap ?? 'page link extraction'}>
                   {result.method === 'crawl'
-                    ? <>No sitemap available — extracted links directly from page (depth 1)</>
+                    ? <>Crawled {result.pagesFetched ?? 0} pages (depth 2) — no public sitemap on this site</>
                     : <>via <span className="font-mono">{result.sitemap}</span></>}
                 </p>
               </div>

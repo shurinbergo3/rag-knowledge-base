@@ -64,8 +64,10 @@ export default function UrlZone({ onUrls, disabled }: Props) {
             </svg>
           </div>
           <div>
-            <p className="text-white font-medium">Paste website URLs</p>
-            <p className="text-xs text-slate-500">One per line · supports comma/semicolon · http(s) only</p>
+            <p className="text-white font-medium">Paste specific page URLs</p>
+            <p className="text-xs text-slate-500">
+              Each URL = one page · for whole sites use <span className="text-violet-400">🗺️ Crawl site</span> tab
+            </p>
           </div>
         </div>
 

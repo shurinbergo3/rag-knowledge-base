@@ -294,8 +294,8 @@ export default function UploadTab({ project }: Props) {
       <div className="flex gap-1 p-1 rounded-xl bg-white/[0.04] border border-white/[0.06] w-full max-w-md mx-auto">
         {([
           { id: 'files', label: 'Files', icon: '📄' },
-          { id: 'urls', label: 'Websites', icon: '🌐' },
-          { id: 'sitemap', label: 'Sitemap', icon: '🗺️' },
+          { id: 'urls', label: 'Single page', icon: '🌐' },
+          { id: 'sitemap', label: 'Crawl site', icon: '🗺️' },
         ] as { id: Mode; label: string; icon: string }[]).map(m => (
           <button
             key={m.id}

@@ -47,13 +47,19 @@ async function fetchText(url: string, expectXml = false): Promise<string> {
   }
 }
 
-async function crawlLinksFromPage(input: URL, pathPrefix: string | null): Promise<string[]> {
-  const html = await fetchText(input.toString(), false)
+const MAX_FETCH_PAGES = 60
+const CRAWL_CONCURRENCY = 5
+
+function extractLinks(
+  html: string,
+  baseUrl: URL,
+  baseHost: string,
+  pathPrefix: string | null,
+  found: Set<string>,
+  newAtThisPage: string[],
+): void {
   const $ = cheerio.load(html)
   $('script, style, noscript, svg').remove()
-
-  const found = new Set<string>()
-  const baseHost = input.host
 
   $('a[href]').each((_, el) => {
     if (found.size >= MAX_URLS) return
@@ -61,7 +67,7 @@ async function crawlLinksFromPage(input: URL, pathPrefix: string | null): Promis
     if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) return
 
     try {
-      const abs = new URL(href, input)
+      const abs = new URL(href, baseUrl)
       if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return
       if (abs.host !== baseHost) return
       if (/\.(pdf|jpe?g|png|gif|svg|webp|mp4|mp3|zip|rar|doc|docx|xls|xlsx|ppt|pptx)$/i.test(abs.pathname)) return
@@ -69,11 +75,62 @@ async function crawlLinksFromPage(input: URL, pathPrefix: string | null): Promis
 
       abs.hash = ''
       abs.search = ''
-      found.add(abs.toString())
+      const absStr = abs.toString()
+      if (!found.has(absStr)) {
+        found.add(absStr)
+        newAtThisPage.push(absStr)
+      }
     } catch { /* ignore */ }
   })
+}
 
-  return Array.from(found).sort()
+async function crawlLinksDeep(
+  input: URL,
+  pathPrefix: string | null,
+  maxDepth: number = 2,
+): Promise<{ urls: string[]; pagesFetched: number }> {
+  const found = new Set<string>()
+  const visited = new Set<string>()
+  let frontier: Array<{ url: URL; depth: number }> = [{ url: input, depth: 0 }]
+
+  while (frontier.length > 0 && found.size < MAX_URLS && visited.size < MAX_FETCH_PAGES) {
+    const remaining = MAX_FETCH_PAGES - visited.size
+    const batch = frontier.splice(0, Math.min(CRAWL_CONCURRENCY, remaining))
+    const nextLayer: Array<{ url: URL; depth: number }> = []
+
+    await Promise.allSettled(batch.map(async ({ url, depth }) => {
+      const key = url.toString()
+      if (visited.has(key)) return
+      visited.add(key)
+
+      let html: string
+      try {
+        html = await fetchText(key, false)
+      } catch {
+        return
+      }
+
+      const newLinks: string[] = []
+      extractLinks(html, url, input.host, pathPrefix, found, newLinks)
+
+      if (depth + 1 < maxDepth) {
+        for (const link of newLinks) {
+          if (visited.size + nextLayer.length >= MAX_FETCH_PAGES) break
+          try {
+            nextLayer.push({ url: new URL(link), depth: depth + 1 })
+          } catch { /* ignore */ }
+        }
+      }
+    }))
+
+    // BFS: process current layer fully before going deeper
+    frontier = [...frontier, ...nextLayer]
+  }
+
+  return {
+    urls: Array.from(found).sort(),
+    pagesFetched: visited.size,
+  }
 }
 
 async function discoverSitemapCandidates(input: URL): Promise<string[]> {
@@ -186,16 +243,18 @@ export async function POST(request: NextRequest) {
     }
 
     let method: 'sitemap' | 'crawl' = 'sitemap'
+    let pagesFetched = 0
 
     if (urls.size === 0) {
-      // Fallback: crawl the input page for same-host links (depth 1)
+      // Fallback: BFS-crawl the input page for same-host links, depth 2
       method = 'crawl'
       try {
-        const links = await crawlLinksFromPage(parsed, pathPrefix)
-        for (const u of links) {
+        const result = await crawlLinksDeep(parsed, pathPrefix, 2)
+        for (const u of result.urls) {
           if (urls.size >= MAX_URLS) break
           urls.add(u)
         }
+        pagesFetched = result.pagesFetched
       } catch (err) {
         const m = err instanceof Error ? err.message : 'crawl failed'
         return NextResponse.json(
@@ -210,7 +269,7 @@ export async function POST(request: NextRequest) {
       if (urls.size === 0) {
         return NextResponse.json(
           {
-            error: `No sitemap found and no internal links discovered on ${parsed.toString()}. The page may be JS-rendered, or you may need to point to a specific section like /web/udsc.`,
+            error: `No sitemap found and no internal links discovered on ${parsed.toString()}. The page may be JS-rendered, or the section may be empty.`,
             triedSitemaps: triedSitemaps.slice(0, 3),
           },
           { status: 404 },
@@ -234,6 +293,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       sitemap: usedSitemap,
       method,
+      pagesFetched,
       pathPrefix,
       urls: final,
       total: final.length,
