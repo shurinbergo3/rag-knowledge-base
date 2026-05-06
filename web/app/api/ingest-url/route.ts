@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
+import * as cheerio from 'cheerio'
 import { parseHtml } from '@/lib/parsers/html'
 import { embedTexts } from '@/lib/embeddings'
 import { ensureCollection, upsertChunks, defaultProject, isValidProjectName } from '@/lib/qdrant'
 import { filterChunks } from '@/lib/content-filter'
 import { isAuthorized } from '@/lib/auth'
-import type { UploadProgress } from '@/lib/types'
+import type { UploadProgress, Chunk } from '@/lib/types'
 
 export const maxDuration = 60
 
 const MAX_BYTES = 10 * 1024 * 1024
 const MAX_CHUNKS = 10_000
 const FETCH_TIMEOUT_MS = 20_000
+const MAX_FOLLOW = 12
+const THIN_HUB_CHUNK_THRESHOLD = 6
+const THIN_HUB_CHARS_THRESHOLD = 1200
 
 function sse(data: UploadProgress): string {
   return `data: ${JSON.stringify(data)}\n\n`
@@ -24,6 +28,39 @@ function isValidUrl(raw: string): URL | null {
   } catch {
     return null
   }
+}
+
+function extractInternalContentLinks(html: string, baseUrl: URL): string[] {
+  const $ = cheerio.load(html)
+  $('script, style, nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], .breadcrumb, .breadcrumbs').remove()
+
+  let root = $('main').first()
+  if (!root.length) root = $('article').first()
+  if (!root.length) root = $('body')
+
+  const inputPath = baseUrl.pathname.replace(/\/$/, '') || '/'
+  // Parent path: e.g. "/web/udsc/karta-pobytu-cukr" → "/web/udsc/"
+  const lastSlash = inputPath.lastIndexOf('/')
+  const parentPath = lastSlash > 0 ? inputPath.slice(0, lastSlash + 1) : '/'
+
+  const links = new Set<string>()
+  root.find('a[href]').each((_, el) => {
+    const href = ($(el).attr('href') ?? '').trim()
+    if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) return
+    try {
+      const abs = new URL(href, baseUrl)
+      if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return
+      if (abs.host !== baseUrl.host) return
+      if (!abs.pathname.startsWith(parentPath)) return
+      if (abs.pathname === inputPath || abs.pathname === inputPath + '/') return
+      if (/\.(pdf|jpe?g|png|gif|svg|webp|mp4|mp3|zip|rar|doc|docx|xls|xlsx|ppt|pptx)$/i.test(abs.pathname)) return
+      abs.hash = ''
+      abs.search = ''
+      links.add(abs.toString())
+    } catch { /* ignore */ }
+  })
+
+  return Array.from(links)
 }
 
 async function fetchHtml(url: URL): Promise<{ html: string; finalUrl: string }> {
@@ -119,21 +156,67 @@ export async function POST(request: NextRequest) {
         send({ step: 'parse', status: 'running' })
 
         const { html, finalUrl } = await fetchHtml(parsed)
-        const { chunks, title } = parseHtml(html, finalUrl)
+        const initial = parseHtml(html, finalUrl)
+        const title = initial.title
 
-        if (chunks.length === 0) {
+        let allChunks: Chunk[] = [...initial.chunks]
+        let followedCount = 0
+        let followedTotal = 0
+
+        const initialChars = allChunks.reduce((s, c) => s + c.text.length, 0)
+        const isThinHub =
+          allChunks.length < THIN_HUB_CHUNK_THRESHOLD ||
+          initialChars < THIN_HUB_CHARS_THRESHOLD
+
+        if (isThinHub) {
+          const links = extractInternalContentLinks(html, new URL(finalUrl))
+          const toFollow = links.slice(0, MAX_FOLLOW)
+          followedTotal = toFollow.length
+
+          if (toFollow.length > 0) {
+            send({
+              step: 'parse',
+              status: 'running',
+              chunkCount: allChunks.length,
+              message: `Hub page detected — fetching ${toFollow.length} sub-page${toFollow.length === 1 ? '' : 's'}…`,
+            })
+
+            for (let i = 0; i < toFollow.length; i++) {
+              const link = toFollow[i]
+              try {
+                const sub = await fetchHtml(new URL(link))
+                const subParsed = parseHtml(sub.html, sub.finalUrl)
+                allChunks.push(...subParsed.chunks)
+                followedCount++
+              } catch { /* skip broken sub-page */ }
+              send({
+                step: 'parse',
+                status: 'running',
+                chunkCount: allChunks.length,
+                scanned: i + 1,
+                message: `Following sub-pages: ${i + 1}/${toFollow.length}`,
+              })
+            }
+          }
+        }
+
+        if (allChunks.length === 0) {
           send({ step: 'error', status: 'error', message: `No readable content found at ${finalUrl}` })
           return
         }
-        if (chunks.length > MAX_CHUNKS) {
-          send({ step: 'error', status: 'error', message: `Too many chunks (${chunks.length} > ${MAX_CHUNKS})` })
+        if (allChunks.length > MAX_CHUNKS) {
+          send({ step: 'error', status: 'error', message: `Too many chunks (${allChunks.length} > ${MAX_CHUNKS})` })
           return
         }
 
-        send({ step: 'parse', status: 'done', chunkCount: chunks.length, message: title })
+        const parseMessage = followedTotal > 0
+          ? `${title} (+${followedCount} sub-pages)`
+          : title
 
-        send({ step: 'filter', status: 'running', chunkCount: chunks.length, scanned: 0 })
-        const { kept, dropped, totalScanned } = await filterChunks(chunks, (done, total) => {
+        send({ step: 'parse', status: 'done', chunkCount: allChunks.length, message: parseMessage })
+
+        send({ step: 'filter', status: 'running', chunkCount: allChunks.length, scanned: 0 })
+        const { kept, dropped, totalScanned } = await filterChunks(allChunks, (done, total) => {
           send({ step: 'filter', status: 'running', chunkCount: total, scanned: done })
         })
         send({ step: 'filter', status: 'done', chunkCount: kept.length, dropped, scanned: totalScanned })
@@ -150,7 +233,7 @@ export async function POST(request: NextRequest) {
             chunkCount: kept.length,
             chunks: kept,
             full: true,
-            message: title,
+            message: parseMessage,
             dropped,
             scanned: totalScanned,
           })
@@ -171,7 +254,7 @@ export async function POST(request: NextRequest) {
           status: 'done',
           chunkCount: kept.length,
           chunks: kept.slice(0, 20),
-          message: title,
+          message: parseMessage,
           dropped,
           scanned: totalScanned,
         })
