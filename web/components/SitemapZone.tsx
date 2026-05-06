@@ -9,8 +9,11 @@ interface DiscoverResult {
   method?: 'sitemap' | 'crawl'
   pagesFetched?: number
   pathPrefix: string | null
+  include?: string[]
+  exclude?: string[]
   urls: string[]
   total: number
+  totalBeforeFilters?: number
 }
 
 interface Props {
@@ -18,12 +21,26 @@ interface Props {
   disabled?: boolean
 }
 
+function parseKeywords(input: string): string[] {
+  return input
+    .split(/[,\n;]+/)
+    .map(s => s.trim().toLowerCase())
+    .filter(s => s.length > 0)
+}
+
 export default function SitemapZone({ onUrls, disabled }: Props) {
   const [value, setValue] = useState('')
+  const [includeRaw, setIncludeRaw] = useState('')
+  const [excludeRaw, setExcludeRaw] = useState('')
+  const [showFilters, setShowFilters] = useState(false)
+
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<DiscoverResult | null>(null)
-  const [pathFilter, setPathFilter] = useState('')
+
+  // post-discovery refinement
+  const [refineInclude, setRefineInclude] = useState('')
+  const [refineExclude, setRefineExclude] = useState('')
 
   async function discover() {
     if (disabled || busy) return
@@ -39,7 +56,11 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
       const res = await fetchWithAuth('/api/sitemap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: trimmed }),
+        body: JSON.stringify({
+          url: trimmed,
+          include: parseKeywords(includeRaw),
+          exclude: parseKeywords(excludeRaw),
+        }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Discovery failed' }))
@@ -47,7 +68,8 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
       }
       const data: DiscoverResult = await res.json()
       setResult(data)
-      setPathFilter(data.pathPrefix ?? '')
+      setRefineInclude('')
+      setRefineExclude('')
     } catch (err) {
       const msg = err instanceof UnauthorizedError ? 'Session expired' : err instanceof Error ? err.message : 'Network error'
       setError(msg)
@@ -56,32 +78,36 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
     }
   }
 
-  function addAll(filter?: string) {
+  function applyRefinement(urls: string[]): string[] {
+    const inc = parseKeywords(refineInclude)
+    const exc = parseKeywords(refineExclude)
+    return urls.filter(u => {
+      const hay = u.toLowerCase()
+      if (exc.length > 0 && exc.some(kw => hay.includes(kw))) return false
+      if (inc.length > 0 && !inc.some(kw => hay.includes(kw))) return false
+      return true
+    })
+  }
+
+  function addAll() {
     if (!result) return
-    let urls = result.urls
-    if (filter && filter.trim()) {
-      const f = filter.trim()
-      urls = urls.filter(u => {
-        try { return new URL(u).pathname.includes(f) } catch { return false }
-      })
-    }
+    const urls = applyRefinement(result.urls)
     if (urls.length === 0) {
-      setError('No URLs match the filter')
+      setError('No URLs match the refinement filters')
       return
     }
     onUrls(urls)
     setResult(null)
     setValue('')
-    setPathFilter('')
+    setRefineInclude('')
+    setRefineExclude('')
+    setIncludeRaw('')
+    setExcludeRaw('')
     setError(null)
   }
 
-  const previewCount = result ? Math.min(result.urls.length, 8) : 0
-  const filteredCount = result && pathFilter.trim()
-    ? result.urls.filter(u => {
-        try { return new URL(u).pathname.includes(pathFilter.trim()) } catch { return false }
-      }).length
-    : result?.urls.length ?? 0
+  const refinedUrls = result ? applyRefinement(result.urls) : []
+  const refinedCount = refinedUrls.length
 
   return (
     <div className="space-y-4">
@@ -125,10 +151,65 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
           </button>
         </div>
 
-        <p className="text-xs text-slate-600 mt-2">
-          Tries <span className="font-mono">/sitemap.xml</span>, <span className="font-mono">/robots.txt</span>, and sitemap index files.
-          Falls back to crawling links on the page if no sitemap exists.
-          Pass a path like <span className="font-mono">/web/udsc</span> to filter that section.
+        {/* Topic/keyword filters BEFORE crawl */}
+        <button
+          type="button"
+          onClick={() => setShowFilters(v => !v)}
+          className="mt-3 text-xs text-slate-500 hover:text-violet-400 flex items-center gap-1.5"
+        >
+          <svg className={`w-3 h-3 transition-transform ${showFilters ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+          Filter by topic / keywords (optional)
+          {(includeRaw || excludeRaw) && (
+            <span className="text-violet-400 text-[10px]">· active</span>
+          )}
+        </button>
+
+        <AnimatePresence>
+          {showFilters && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div className="mt-3 space-y-2.5">
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">
+                    Include keywords <span className="text-slate-600">(URL or link text must contain at least one)</span>
+                  </label>
+                  <input
+                    value={includeRaw}
+                    onChange={e => setIncludeRaw(e.target.value)}
+                    placeholder="karta-pobytu, zezwolenie, wiza"
+                    className="w-full bg-black/40 border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-700 outline-none focus:border-violet-500/40 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">
+                    Exclude keywords <span className="text-slate-600">(skip URLs/links containing any)</span>
+                  </label>
+                  <input
+                    value={excludeRaw}
+                    onChange={e => setExcludeRaw(e.target.value)}
+                    placeholder="aktualnosci, news, kontakt, en/, ru/"
+                    className="w-full bg-black/40 border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-700 outline-none focus:border-violet-500/40 font-mono"
+                  />
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Filters apply during crawl — bot only follows/keeps links matching include and not matching exclude.
+                  Comma-separated. Case-insensitive substring match.
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <p className="text-xs text-slate-600 mt-3">
+          Tries <span className="font-mono">/sitemap.xml</span>, <span className="font-mono">/robots.txt</span>, then falls back to depth-2 link crawl.
+          Pass a path like <span className="font-mono">/web/udsc</span> to constrain to that section.
         </p>
       </div>
 
@@ -154,7 +235,7 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
             className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5 space-y-4"
           >
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center flex-shrink-0">
                 <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
@@ -162,6 +243,11 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-white">
                   Found <span className="font-mono text-emerald-400">{result.total}</span> URL{result.total === 1 ? '' : 's'}
+                  {result.totalBeforeFilters !== undefined && result.totalBeforeFilters !== result.total && (
+                    <span className="ml-1 text-xs text-slate-500 font-mono">
+                      (from {result.totalBeforeFilters} before topic filters)
+                    </span>
+                  )}
                   {result.method === 'crawl' && (
                     <span className="ml-2 text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
                       via link crawl
@@ -176,31 +262,45 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs text-slate-400 mb-1.5">Filter by path substring (optional)</label>
-              <input
-                value={pathFilter}
-                onChange={e => setPathFilter(e.target.value)}
-                placeholder="e.g. /web/udsc/karta-pobytu"
-                className="w-full bg-black/40 border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-700 outline-none focus:border-violet-500/40 font-mono"
-              />
-              <p className="text-xs text-slate-600 mt-1.5">
-                {pathFilter.trim()
-                  ? <>{filteredCount} of {result.total} URLs match</>
-                  : <>All {result.total} URLs will be added</>}
+            <div className="space-y-2.5">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Refine: include keywords</label>
+                <input
+                  value={refineInclude}
+                  onChange={e => setRefineInclude(e.target.value)}
+                  placeholder="e.g. karta-pobytu"
+                  className="w-full bg-black/40 border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-700 outline-none focus:border-violet-500/40 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Refine: exclude keywords</label>
+                <input
+                  value={refineExclude}
+                  onChange={e => setRefineExclude(e.target.value)}
+                  placeholder="e.g. aktualnosci, news"
+                  className="w-full bg-black/40 border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-700 outline-none focus:border-violet-500/40 font-mono"
+                />
+              </div>
+              <p className="text-[11px] text-slate-600">
+                {(refineInclude.trim() || refineExclude.trim())
+                  ? <><span className="text-violet-400 font-mono">{refinedCount}</span> of {result.total} URLs match the refinement</>
+                  : <>{result.total} URLs ready · refine above to narrow further</>}
               </p>
             </div>
 
             <div className="rounded-lg bg-black/30 border border-white/[0.04] p-3 max-h-48 overflow-y-auto">
-              <p className="text-xs text-slate-500 mb-2">Preview (first {previewCount}):</p>
+              <p className="text-xs text-slate-500 mb-2">Preview (first {Math.min(refinedCount, 8)}):</p>
               <ul className="space-y-1">
-                {result.urls.slice(0, 8).map(u => (
+                {refinedUrls.slice(0, 8).map(u => (
                   <li key={u} className="text-xs font-mono text-slate-400 truncate" title={u}>
                     {u}
                   </li>
                 ))}
-                {result.urls.length > 8 && (
-                  <li className="text-xs font-mono text-slate-600">…{result.urls.length - 8} more</li>
+                {refinedUrls.length > 8 && (
+                  <li className="text-xs font-mono text-slate-600">…{refinedUrls.length - 8} more</li>
+                )}
+                {refinedUrls.length === 0 && (
+                  <li className="text-xs text-amber-400">Nothing matches the refinement filters.</li>
                 )}
               </ul>
             </div>
@@ -213,11 +313,11 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
                 Cancel
               </button>
               <button
-                onClick={() => addAll(pathFilter)}
-                disabled={filteredCount === 0}
+                onClick={addAll}
+                disabled={refinedCount === 0}
                 className="btn-primary px-5 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-40"
               >
-                Add {filteredCount} to queue
+                Add {refinedCount} to queue
               </button>
             </div>
           </motion.div>

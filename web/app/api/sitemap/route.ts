@@ -50,11 +50,24 @@ async function fetchText(url: string, expectXml = false): Promise<string> {
 const MAX_FETCH_PAGES = 60
 const CRAWL_CONCURRENCY = 5
 
+interface CrawlFilters {
+  pathPrefix: string | null
+  include: string[]   // lowercase substrings; URL or anchor must match at least one
+  exclude: string[]   // lowercase substrings; URL or anchor must not match any
+}
+
+function matchesFilters(absUrl: URL, anchorText: string, filters: CrawlFilters): boolean {
+  const haystack = `${absUrl.pathname} ${absUrl.host} ${anchorText}`.toLowerCase()
+  if (filters.exclude.length > 0 && filters.exclude.some(kw => haystack.includes(kw))) return false
+  if (filters.include.length > 0 && !filters.include.some(kw => haystack.includes(kw))) return false
+  return true
+}
+
 function extractLinks(
   html: string,
   baseUrl: URL,
   baseHost: string,
-  pathPrefix: string | null,
+  filters: CrawlFilters,
   found: Set<string>,
   newAtThisPage: string[],
 ): void {
@@ -63,15 +76,19 @@ function extractLinks(
 
   $('a[href]').each((_, el) => {
     if (found.size >= MAX_URLS) return
-    const href = ($(el).attr('href') ?? '').trim()
+    const $el = $(el)
+    const href = ($el.attr('href') ?? '').trim()
     if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) return
+
+    const anchorText = ($el.text() || '').trim()
 
     try {
       const abs = new URL(href, baseUrl)
       if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return
       if (abs.host !== baseHost) return
       if (/\.(pdf|jpe?g|png|gif|svg|webp|mp4|mp3|zip|rar|doc|docx|xls|xlsx|ppt|pptx)$/i.test(abs.pathname)) return
-      if (pathPrefix && !abs.pathname.startsWith(pathPrefix)) return
+      if (filters.pathPrefix && !abs.pathname.startsWith(filters.pathPrefix)) return
+      if (!matchesFilters(abs, anchorText, filters)) return
 
       abs.hash = ''
       abs.search = ''
@@ -86,7 +103,7 @@ function extractLinks(
 
 async function crawlLinksDeep(
   input: URL,
-  pathPrefix: string | null,
+  filters: CrawlFilters,
   maxDepth: number = 2,
 ): Promise<{ urls: string[]; pagesFetched: number }> {
   const found = new Set<string>()
@@ -111,7 +128,7 @@ async function crawlLinksDeep(
       }
 
       const newLinks: string[] = []
-      extractLinks(html, url, input.host, pathPrefix, found, newLinks)
+      extractLinks(html, url, input.host, filters, found, newLinks)
 
       if (depth + 1 < maxDepth) {
         for (const link of newLinks) {
@@ -204,11 +221,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const body = await request.json().catch(() => null) as { url?: unknown } | null
+  const body = await request.json().catch(() => null) as {
+    url?: unknown
+    include?: unknown
+    exclude?: unknown
+  } | null
   if (!body) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
 
   const raw = String(body.url ?? '').trim()
   if (!raw) return NextResponse.json({ error: 'URL required' }, { status: 400 })
+
+  const parseKeywords = (raw: unknown): string[] => {
+    if (!raw) return []
+    const list = Array.isArray(raw) ? raw : String(raw).split(/[,\n;]+/)
+    return list
+      .map(s => String(s).trim().toLowerCase())
+      .filter(s => s.length > 0)
+      .slice(0, 20)
+  }
+
+  const include = parseKeywords(body.include)
+  const exclude = parseKeywords(body.exclude)
 
   let parsed: URL
   try {
@@ -222,6 +255,8 @@ export async function POST(request: NextRequest) {
   const pathPrefix = parsed.pathname.length > 1 && !parsed.pathname.endsWith('.xml')
     ? parsed.pathname.replace(/\/$/, '')
     : null
+
+  const filters: CrawlFilters = { pathPrefix, include, exclude }
 
   try {
     const candidates = await discoverSitemapCandidates(parsed)
@@ -249,7 +284,7 @@ export async function POST(request: NextRequest) {
       // Fallback: BFS-crawl the input page for same-host links, depth 2
       method = 'crawl'
       try {
-        const result = await crawlLinksDeep(parsed, pathPrefix, 2)
+        const result = await crawlLinksDeep(parsed, filters, 2)
         for (const u of result.urls) {
           if (urls.size >= MAX_URLS) break
           urls.add(u)
@@ -281,13 +316,22 @@ export async function POST(request: NextRequest) {
       try { return new URL(u).host === parsed.host } catch { return false }
     })
 
-    const filtered = pathPrefix
-      ? sameHost.filter(u => {
-          try { return new URL(u).pathname.startsWith(pathPrefix) } catch { return false }
-        })
-      : sameHost
+    const matchesKeywords = (u: string): boolean => {
+      const haystack = u.toLowerCase()
+      if (exclude.length > 0 && exclude.some(kw => haystack.includes(kw))) return false
+      if (include.length > 0 && !include.some(kw => haystack.includes(kw))) return false
+      return true
+    }
 
-    const final = (filtered.length ? filtered : sameHost).slice(0, MAX_URLS)
+    const filtered = sameHost.filter(u => {
+      try {
+        const path = new URL(u).pathname
+        if (pathPrefix && !path.startsWith(pathPrefix)) return false
+        return matchesKeywords(u)
+      } catch { return false }
+    })
+
+    const final = filtered.slice(0, MAX_URLS)
     final.sort()
 
     return NextResponse.json({
@@ -295,9 +339,12 @@ export async function POST(request: NextRequest) {
       method,
       pagesFetched,
       pathPrefix,
+      include,
+      exclude,
       urls: final,
       total: final.length,
-      truncated: filtered.length > MAX_URLS || sameHost.length > MAX_URLS,
+      totalBeforeFilters: sameHost.length,
+      truncated: filtered.length > MAX_URLS,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to fetch sitemap'

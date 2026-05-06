@@ -6,6 +6,7 @@ import UploadTab from '@/components/UploadTab'
 import SearchTab from '@/components/SearchTab'
 import AuthGate from '@/components/AuthGate'
 import ProjectSelector from '@/components/ProjectSelector'
+import ErrorBoundary from '@/components/ErrorBoundary'
 import { useProjects } from '@/lib/use-projects'
 
 type Tab = 'upload' | 'search'
@@ -116,8 +117,10 @@ function HomeInner() {
 
 export default function Home() {
   return (
-    <AuthGate>
-      <HomeInner />
-    </AuthGate>
+    <ErrorBoundary>
+      <AuthGate>
+        <HomeInner />
+      </AuthGate>
+    </ErrorBoundary>
   )
 }
