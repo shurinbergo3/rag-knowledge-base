@@ -6,6 +6,7 @@ import { fetchWithAuth, UnauthorizedError } from '@/lib/client-auth'
 
 interface DiscoverResult {
   sitemap: string | null
+  method?: 'sitemap' | 'crawl'
   pathPrefix: string | null
   urls: string[]
   total: number
@@ -125,7 +126,8 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
 
         <p className="text-xs text-slate-600 mt-2">
           Tries <span className="font-mono">/sitemap.xml</span>, <span className="font-mono">/robots.txt</span>, and sitemap index files.
-          Pass a path like <span className="font-mono">/web/udsc</span> to filter only that section.
+          Falls back to crawling links on the page if no sitemap exists.
+          Pass a path like <span className="font-mono">/web/udsc</span> to filter that section.
         </p>
       </div>
 
@@ -156,12 +158,19 @@ export default function SitemapZone({ onUrls, disabled }: Props) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <div>
+              <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-white">
                   Found <span className="font-mono text-emerald-400">{result.total}</span> URL{result.total === 1 ? '' : 's'}
+                  {result.method === 'crawl' && (
+                    <span className="ml-2 text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
+                      via link crawl
+                    </span>
+                  )}
                 </p>
-                <p className="text-xs text-slate-500 truncate" title={result.sitemap ?? undefined}>
-                  via <span className="font-mono">{result.sitemap}</span>
+                <p className="text-xs text-slate-500 truncate" title={result.sitemap ?? 'page link extraction'}>
+                  {result.method === 'crawl'
+                    ? <>No sitemap available — extracted links directly from page (depth 1)</>
+                    : <>via <span className="font-mono">{result.sitemap}</span></>}
                 </p>
               </div>
             </div>

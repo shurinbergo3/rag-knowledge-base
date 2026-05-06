@@ -10,7 +10,7 @@ const FETCH_TIMEOUT_MS = 15_000
 const MAX_INDEX_DEPTH = 3
 const MAX_INDEX_CHILDREN = 10
 
-async function fetchText(url: string): Promise<string> {
+async function fetchText(url: string, expectXml = false): Promise<string> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
   try {
@@ -19,16 +19,61 @@ async function fetchText(url: string): Promise<string> {
       redirect: 'follow',
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; RAGBuilder/1.0)',
-        'Accept': 'application/xml,text/xml,*/*;q=0.5',
+        'Accept': expectXml ? 'application/xml,text/xml,*/*;q=0.5' : 'text/html,*/*;q=0.5',
       },
     })
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
+
+    if (expectXml) {
+      const ct = res.headers.get('content-type') ?? ''
+      if (ct && !/xml/i.test(ct) && !/text\/plain/i.test(ct)) {
+        throw new Error(`Not XML (content-type: ${ct})`)
+      }
+    }
+
     const text = await res.text()
-    if (text.length > MAX_BYTES) throw new Error(`Sitemap too large (>${MAX_BYTES / 1024 / 1024} MB)`)
+    if (text.length > MAX_BYTES) throw new Error(`Response too large (>${MAX_BYTES / 1024 / 1024} MB)`)
+
+    if (expectXml) {
+      // Reject HTML masquerading as XML (SPA fallback returns the homepage)
+      const head = text.slice(0, 500).toLowerCase()
+      if (head.includes('<!doctype html') || head.includes('<html')) {
+        throw new Error('Not a sitemap (got HTML)')
+      }
+    }
     return text
   } finally {
     clearTimeout(timeout)
   }
+}
+
+async function crawlLinksFromPage(input: URL, pathPrefix: string | null): Promise<string[]> {
+  const html = await fetchText(input.toString(), false)
+  const $ = cheerio.load(html)
+  $('script, style, noscript, svg').remove()
+
+  const found = new Set<string>()
+  const baseHost = input.host
+
+  $('a[href]').each((_, el) => {
+    if (found.size >= MAX_URLS) return
+    const href = ($(el).attr('href') ?? '').trim()
+    if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) return
+
+    try {
+      const abs = new URL(href, input)
+      if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return
+      if (abs.host !== baseHost) return
+      if (/\.(pdf|jpe?g|png|gif|svg|webp|mp4|mp3|zip|rar|doc|docx|xls|xlsx|ppt|pptx)$/i.test(abs.pathname)) return
+      if (pathPrefix && !abs.pathname.startsWith(pathPrefix)) return
+
+      abs.hash = ''
+      abs.search = ''
+      found.add(abs.toString())
+    } catch { /* ignore */ }
+  })
+
+  return Array.from(found).sort()
 }
 
 async function discoverSitemapCandidates(input: URL): Promise<string[]> {
@@ -40,7 +85,7 @@ async function discoverSitemapCandidates(input: URL): Promise<string[]> {
   const origin = `${input.protocol}//${input.host}`
 
   try {
-    const robots = await fetchText(`${origin}/robots.txt`)
+    const robots = await fetchText(`${origin}/robots.txt`, false)
     const matches = robots.matchAll(/^\s*Sitemap:\s*(\S+)/gim)
     for (const m of matches) candidates.add(m[1].trim())
   } catch { /* ignore */ }
@@ -83,7 +128,7 @@ async function parseSitemap(
     for (const childUrl of toFetch) {
       if (accumulator.size >= MAX_URLS) break
       try {
-        const childXml = await fetchText(childUrl)
+        const childXml = await fetchText(childUrl, true)
         await parseSitemap(childXml, depth + 1, accumulator, pathPrefix)
       } catch { /* ignore */ }
     }
@@ -131,7 +176,7 @@ export async function POST(request: NextRequest) {
       if (urls.size >= MAX_URLS) break
       triedSitemaps.push(sm)
       try {
-        const xml = await fetchText(sm)
+        const xml = await fetchText(sm, true)
         await parseSitemap(xml, 0, urls, pathPrefix)
         if (urls.size > 0) {
           usedSitemap = sm
@@ -140,11 +185,37 @@ export async function POST(request: NextRequest) {
       } catch { /* try next */ }
     }
 
+    let method: 'sitemap' | 'crawl' = 'sitemap'
+
     if (urls.size === 0) {
-      return NextResponse.json(
-        { error: `No sitemap found for ${parsed.host}${pathPrefix ?? ''}. Tried: ${triedSitemaps.slice(0, 3).join(', ')}` },
-        { status: 404 },
-      )
+      // Fallback: crawl the input page for same-host links (depth 1)
+      method = 'crawl'
+      try {
+        const links = await crawlLinksFromPage(parsed, pathPrefix)
+        for (const u of links) {
+          if (urls.size >= MAX_URLS) break
+          urls.add(u)
+        }
+      } catch (err) {
+        const m = err instanceof Error ? err.message : 'crawl failed'
+        return NextResponse.json(
+          {
+            error: `No sitemap found for ${parsed.host}${pathPrefix ?? ''}. Link-crawl fallback also failed: ${m}. Try a more specific section URL.`,
+            triedSitemaps: triedSitemaps.slice(0, 3),
+          },
+          { status: 404 },
+        )
+      }
+
+      if (urls.size === 0) {
+        return NextResponse.json(
+          {
+            error: `No sitemap found and no internal links discovered on ${parsed.toString()}. The page may be JS-rendered, or you may need to point to a specific section like /web/udsc.`,
+            triedSitemaps: triedSitemaps.slice(0, 3),
+          },
+          { status: 404 },
+        )
+      }
     }
 
     const sameHost = Array.from(urls).filter(u => {
@@ -162,6 +233,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       sitemap: usedSitemap,
+      method,
       pathPrefix,
       urls: final,
       total: final.length,
