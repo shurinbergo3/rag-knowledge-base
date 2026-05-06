@@ -14,35 +14,6 @@ const FILE_TYPES = {
 
 const ACCEPT = Object.values(FILE_TYPES).map(f => f.ext).join(',')
 
-function FileIcon({ type }: { type: keyof typeof FILE_TYPES | null }) {
-  if (!type) {
-    return (
-      <svg className="w-12 h-12 text-slate-600" fill="none" viewBox="0 0 48 48" stroke="currentColor" strokeWidth="1.5">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M28 4H12a4 4 0 00-4 4v32a4 4 0 004 4h24a4 4 0 004-4V20L28 4z"/>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M28 4v16h16"/>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M16 28h16M16 34h10"/>
-      </svg>
-    )
-  }
-
-  const colors: Record<string, string> = {
-    xlsx: '#4ade80', csv: '#2dd4bf', pdf: '#f87171', docx: '#60a5fa', md: '#fbbf24', txt: '#94a3b8'
-  }
-
-  return (
-    <motion.div
-      initial={{ scale: 0.8, rotate: -10 }}
-      animate={{ scale: 1, rotate: 0 }}
-      className="w-16 h-16 rounded-2xl flex items-center justify-center"
-      style={{ background: `${colors[type]}15`, border: `1px solid ${colors[type]}30` }}
-    >
-      <span className="text-2xl font-bold font-mono" style={{ color: colors[type] }}>
-        {FILE_TYPES[type].label.slice(0, 2)}
-      </span>
-    </motion.div>
-  )
-}
-
 function detectType(file: File): keyof typeof FILE_TYPES | null {
   const name = file.name.toLowerCase()
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) return 'xlsx'
@@ -54,56 +25,57 @@ function detectType(file: File): keyof typeof FILE_TYPES | null {
   return null
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
 interface Props {
-  onFile: (file: File) => void
+  onFiles: (files: File[]) => void
   disabled?: boolean
 }
 
-export default function UploadZone({ onFile, disabled }: Props) {
+export default function UploadZone({ onFiles, disabled }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
-  const [selected, setSelected] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  function handleFile(file: File) {
-    const type = detectType(file)
-    if (!type) {
-      setError('Unsupported file type. Please upload Excel, CSV, PDF, DOCX, Markdown, or TXT.')
-      return
+  function handleFiles(files: File[]) {
+    if (files.length === 0) return
+
+    const valid: File[] = []
+    const invalid: string[] = []
+    const tooBig: string[] = []
+
+    for (const file of files) {
+      if (!detectType(file)) {
+        invalid.push(file.name)
+        continue
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        tooBig.push(file.name)
+        continue
+      }
+      valid.push(file)
     }
-    if (file.size > 20 * 1024 * 1024) {
-      setError('File exceeds 20 MB limit.')
-      return
-    }
-    setError(null)
-    setSelected(file)
-    onFile(file)
+
+    const errors: string[] = []
+    if (invalid.length) errors.push(`Unsupported: ${invalid.join(', ')}`)
+    if (tooBig.length) errors.push(`> 20 MB: ${tooBig.join(', ')}`)
+    setError(errors.length ? errors.join(' · ') : null)
+
+    if (valid.length) onFiles(valid)
   }
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragging(false)
     if (disabled) return
-    const file = e.dataTransfer.files[0]
-    if (file) handleFile(file)
+    handleFiles(Array.from(e.dataTransfer.files))
   }
 
   function onInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (file) handleFile(file)
+    handleFiles(Array.from(e.target.files ?? []))
+    e.target.value = ''
   }
-
-  const fileType = selected ? detectType(selected) : null
 
   return (
     <div className="space-y-4">
-      {/* Drop zone */}
       <motion.div
         onDragOver={(e) => { e.preventDefault(); if (!disabled) setDragging(true) }}
         onDragLeave={() => setDragging(false)}
@@ -119,7 +91,6 @@ export default function UploadZone({ onFile, disabled }: Props) {
           ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-white/[0.02]'}
         `}
       >
-        {/* Scan line on drag */}
         <AnimatePresence>
           {dragging && (
             <motion.div
@@ -133,82 +104,41 @@ export default function UploadZone({ onFile, disabled }: Props) {
         </AnimatePresence>
 
         <div className="flex flex-col items-center gap-4">
-          <div className="relative">
-            {/* Outer ring */}
-            <div className={`
-              w-20 h-20 rounded-full flex items-center justify-center
-              transition-all duration-300
-              ${dragging
-                ? 'bg-violet-600/20 ring-2 ring-violet-500/50'
-                : 'bg-white/[0.04] ring-1 ring-white/10'
-              }
-            `}>
-              <AnimatePresence mode="wait">
-                {selected ? (
-                  <FileIcon key="typed" type={fileType} />
-                ) : (
-                  <motion.svg
-                    key="default"
-                    initial={{ opacity: 1 }}
-                    exit={{ opacity: 0, scale: 0.8 }}
-                    className={`w-8 h-8 transition-colors ${dragging ? 'text-violet-400' : 'text-slate-500'}`}
-                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round"
-                      d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-                  </motion.svg>
-                )}
-              </AnimatePresence>
-            </div>
+          <div className={`
+            w-20 h-20 rounded-full flex items-center justify-center
+            transition-all duration-300
+            ${dragging
+              ? 'bg-violet-600/20 ring-2 ring-violet-500/50'
+              : 'bg-white/[0.04] ring-1 ring-white/10'
+            }
+          `}>
+            <svg
+              className={`w-8 h-8 transition-colors ${dragging ? 'text-violet-400' : 'text-slate-500'}`}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round"
+                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+            </svg>
           </div>
 
-          <AnimatePresence mode="wait">
-            {selected ? (
-              <motion.div
-                key="selected"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                className="space-y-1"
-              >
-                <p className="font-semibold text-white">{selected.name}</p>
-                <p className="text-sm text-slate-500 font-mono">{formatSize(selected.size)}</p>
-                {!disabled && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setSelected(null); setError(null) }}
-                    className="text-xs text-slate-500 hover:text-violet-400 transition-colors mt-1"
-                  >
-                    Change file
-                  </button>
-                )}
-              </motion.div>
-            ) : (
-              <motion.div
-                key="empty"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                className="space-y-2"
-              >
-                <p className="text-white font-medium">
-                  {dragging ? 'Drop to upload' : 'Drag & drop your document'}
-                </p>
-                <p className="text-sm text-slate-500">or click to browse</p>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="space-y-2">
+            <p className="text-white font-medium">
+              {dragging ? 'Drop to add' : 'Drag & drop documents'}
+            </p>
+            <p className="text-sm text-slate-500">or click to browse · multiple files supported</p>
+          </div>
         </div>
 
         <input
           ref={inputRef}
           type="file"
+          multiple
           accept={ACCEPT}
           onChange={onInputChange}
           className="hidden"
         />
       </motion.div>
 
-      {/* File type pills */}
       <div className="flex items-center justify-center gap-2 flex-wrap">
         <span className="text-xs text-slate-600">Supported:</span>
         {(Object.entries(FILE_TYPES) as [keyof typeof FILE_TYPES, typeof FILE_TYPES[keyof typeof FILE_TYPES]][]).map(([key, info]) => (
@@ -221,7 +151,6 @@ export default function UploadZone({ onFile, disabled }: Props) {
         ))}
       </div>
 
-      {/* Error */}
       <AnimatePresence>
         {error && (
           <motion.p

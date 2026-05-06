@@ -9,11 +9,13 @@ export interface Chunk {
 }
 
 export interface UploadProgress {
-  step: 'parse' | 'embed' | 'upload' | 'complete' | 'error'
+  step: 'parse' | 'filter' | 'embed' | 'upload' | 'complete' | 'error'
   status: 'idle' | 'running' | 'done' | 'error'
   message?: string
   chunkCount?: number
   chunks?: Chunk[]
+  dropped?: number
+  scanned?: number
 }
 
 export interface SearchResult {
