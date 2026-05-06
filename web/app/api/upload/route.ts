@@ -56,6 +56,7 @@ export async function POST(request: NextRequest) {
         const file = formData.get('file')
         const projectField = String(formData.get('project') ?? '').trim()
         const project = projectField || defaultProject()
+        const dryRun = String(formData.get('dryRun') ?? '') === 'true'
 
         if (!isValidProjectName(project)) {
           send({ step: 'error', status: 'error', message: 'Invalid project name' })
@@ -101,6 +102,17 @@ export async function POST(request: NextRequest) {
         }
 
         send({ step: 'parse', status: 'done', chunkCount: chunks.length })
+
+        if (dryRun) {
+          send({
+            step: 'review',
+            status: 'done',
+            chunkCount: chunks.length,
+            chunks,
+            full: true,
+          })
+          return
+        }
 
         send({ step: 'embed', status: 'running', chunkCount: chunks.length })
         const texts = chunks.map(c => c.text)

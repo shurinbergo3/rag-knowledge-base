@@ -83,12 +83,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const body = await request.json().catch(() => null) as { url?: unknown; project?: unknown } | null
+  const body = await request.json().catch(() => null) as { url?: unknown; project?: unknown; dryRun?: unknown } | null
   if (!body) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
 
   const rawUrl = String(body.url ?? '').trim()
   const projectField = String(body.project ?? '').trim()
   const project = projectField || defaultProject()
+  const dryRun = Boolean(body.dryRun)
 
   if (!isValidProjectName(project)) {
     return NextResponse.json({ error: 'Invalid project name' }, { status: 400 })
@@ -139,6 +140,20 @@ export async function POST(request: NextRequest) {
 
         if (kept.length === 0) {
           send({ step: 'error', status: 'error', message: `All ${totalScanned} extracted chunks were classified as boilerplate/noise — nothing useful on this page.` })
+          return
+        }
+
+        if (dryRun) {
+          send({
+            step: 'review',
+            status: 'done',
+            chunkCount: kept.length,
+            chunks: kept,
+            full: true,
+            message: title,
+            dropped,
+            scanned: totalScanned,
+          })
           return
         }
 
